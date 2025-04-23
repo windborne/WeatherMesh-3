@@ -11,7 +11,6 @@ class EarthConvEncoder3d(nn.Module):
         # Encoder
         self.down_layers = nn.ModuleList()
 
-        
         for i in range(len(conv_dims) - 1):
             in_dim = conv_dims[i] if i != 0 else in_channels
             mid_dim = conv_dims[i]
@@ -46,7 +45,6 @@ class EarthConvDecoder3d(nn.Module):
             ksup = (depth_strides[i],3,3) 
             layer = nn.Sequential(
                 EarthResBlock3d(in_dim+skip_dims[i], in_dim, kernel_size=ksres, affine=affine),
-                #EarthResBlock3d(in_dim, in_dim, kernel_size=ks),
                 EarthConvUp3d(in_dim, out_dim, stride=(depth_strides[i], 2, 2), kernel_size=ksup),
             )
             self.up_layers.append(layer)

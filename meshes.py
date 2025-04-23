@@ -1,33 +1,50 @@
+# JACK_CHANGE_LATER
 import torch
 import numpy as np
 import json
 import hashlib
 import base64
+from utils import load_normalization
 
-from utils import SourceCodeLogger, levels_full, levels_tiny, core_pressure_vars, core_sfc_vars, num2levels, ORANGE, CONSTS_PATH, PROC_PATH, RUNS_PATH
+from utils import levels_full, levels_tiny, core_pressure_vars, core_sfc_vars, num2levels, ORANGE
+# JACK_CHANGE_LATER
 
 class Mesh():
+    """
+    Base Mesh class for all meshes. 
+    
+    This abstract class guarantees all WeatherMesh meshes have a set_string_id() function. 
+    The shape() function is optional, though encouraged. 
+    This class also declares helpful defaults (such as is_required).
+    When building a new Mesh, you should inherit from this class and implement the set_string_id (not-optional) and shape() (optional) functions.
+    To ensure that the set_string_id function is called, you should call super().__post__init__() in your Mesh's __init__ function as the final line.
+    """
     def __init__(self):
-        global CONSTS_PATH,PROC_PATH,RUNS_PATH
-        self.PROC_PATH = PROC_PATH ; self.CONSTS_PATH = CONSTS_PATH ; self.RUNS_PATH = RUNS_PATH
-        
         self.is_required = True
+        
+        # JACK_CHANGE_LATER
         self.all_var_files = ['base']
-        self.ens_num = None
         self.subsamp = 1
         self.resolution = 0.25
-        self.hourly = False
+        # JACK_CHANGE_LATER
         
     def __post__init__(self):
-        # Set the string id for the mesh
-        # Calls the child's override first unless it is not specified
+        """
+        Handles all post initialization for the Mesh class. 
+        
+        Currently only sets the string id for the mesh.
+        """
         self.set_string_id() 
 
-    # The shape of the expected tensor in torch.Size([...]) format
     def shape(self):
-        return -1 # Case where there is no shape 
+        """
+        Returns the shape of the mesh. This function is optional, but encouraged.
+
+        Returns:
+            (int): Shape of the mesh (-1 if you want no shape to be defined)
+        """
+        return -1 
     
-    # Defines a unique string id to identify the mesh in the dataloader
     def set_string_id(self):
         raise NotImplementedError("set_string_id not implemented for this Mesh. You are required to define a unique string id for your mesh")
 
@@ -39,11 +56,11 @@ def get_grid_latlons(res):
 
     return lats, lons
 
-class LatLonGrid(Mesh, SourceCodeLogger):
+class LatLonGrid(Mesh):
     def __init__(self, **kwargs):
         super().__init__()
         self.source = 'era5-28'
-        self.load_locations = ['/fast/proc/']
+        self.load_locations = ['data/']
         self.hour_offset = 0
         
         self.input_levels = None
@@ -61,7 +78,6 @@ class LatLonGrid(Mesh, SourceCodeLogger):
         lons.shape = (lons.shape[0]//self.subsamp, self.subsamp)
         lons[lons >= 180] -= 360
         self.lons = np.mean(lons, axis=1)
-        self.parent = None
         self.bbox = None
         
         for k,v in kwargs.items():
@@ -85,7 +101,7 @@ class LatLonGrid(Mesh, SourceCodeLogger):
     def update(self):
         global levels_full
         assert '-' in self.source, f'source must be of the form "era5-28" or "hres-13", not {self.source}'
-        #self.pressure_vars = ["129_z", "130_t", "131_u", "132_v", "135_w", "133_q", "075_crwc", "076_cswc", "248_cc", "246_clwc", "247_ciwc"]
+        
         numlev = int(self.source.split('-')[1])
         if self.levels is None:
             self.levels = num2levels[numlev]
@@ -107,7 +123,7 @@ class LatLonGrid(Mesh, SourceCodeLogger):
 
         self.n_levels = len(self.levels)
         self.n_pr_vars = len(self.pressure_vars)
-        self.wh_lev = [levels_full.index(x) for x in self.levels] #which_levels
+        self.which_level = [levels_full.index(x) for x in self.levels] 
         self.n_pr_vars = len(self.pressure_vars)
         self.n_pr = self.n_levels * self.n_pr_vars
         self.n_sfc = len(self.sfc_vars)
@@ -133,9 +149,7 @@ class LatLonGrid(Mesh, SourceCodeLogger):
         self.Lons /= 180
         self.Lats /= 90
         self.xpos = np.stack((self.Lats, self.Lons), axis=2)
-
-        import utils
-        self.state_norm,self.state_norm_stds,self.state_norm_means = utils.load_state_norm(self.wh_lev,self,with_means=True)
+        self.norm, self.normalization_matrix_std, self.normalization_matrix_mean = load_normalization(self, with_means=True)
 
     def lon2i(self, lons):
         return np.argmin(np.abs(self.lons[:,np.newaxis] - lons),axis=0)
@@ -143,7 +157,7 @@ class LatLonGrid(Mesh, SourceCodeLogger):
     def lat2i(self, lats):
         return np.argmin(np.abs(self.lats[:,np.newaxis] - lats),axis=0)
     
-    def to_json(self, model_name=None):
+    def to_json(self):
         out = {}
         out['mesh_type'] = self.__class__.__name__
         out['pressure_vars'] = self.pressure_vars
@@ -153,13 +167,12 @@ class LatLonGrid(Mesh, SourceCodeLogger):
         out['lats'] = self.lats.tolist()
         out['lons'] = self.lons.tolist()
         out['res'] = self.res
-        if model_name is not None: out['model_name'] = model_name
-        st = json.dumps(out, indent=2)
-        hash_24bit = hashlib.sha256(st.encode()).digest()[:3]
-        base64_encoded = base64.b64encode(hash_24bit).decode()
-        # replace + and / with a and b to because / in filenames are RIP. we could use urlsafe_b64encode but it would be incompatible with the old hashes
-        base64_encoded = base64_encoded.replace('+', 'a').replace('/', 'b')
-        return st, base64_encoded
+        
+        json = json.dumps(out, indent=2)
+        hash_24bit = hashlib.sha256(json.encode()).digest()[:3]
+        hash = base64.b64encode(hash_24bit).decode()
+        hash = hash.replace('+', 'a').replace('/', 'b')
+        return json, hash
 
     @staticmethod
     def from_json(js):
@@ -168,7 +181,7 @@ class LatLonGrid(Mesh, SourceCodeLogger):
         out.source = "unknown"
         out.lats = np.array(out.lats)
         out.lons = np.array(out.lons)
-        out.wh_lev = [levels_full.index(x) for x in out.levels] #which_levels
+        out.which_level = [levels_full.index(x) for x in out.levels] 
         out.subsamp = 1; assert np.diff(out.lats)[1] == -0.25, f'lat diff is {np.diff(out.lats)}'
         out.update_mesh()
         return out

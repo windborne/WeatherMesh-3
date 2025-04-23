@@ -20,7 +20,6 @@ class EarthConvEncoder2d(nn.Module):
                 EarthConvDown2d(mid_dim, next_dim)
             )
             self.down_layers.append(layer)
-
         
         self.latent_dim = conv_dims[-1]
 

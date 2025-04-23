@@ -1,7 +1,7 @@
 from meshes import LatLonGrid
 
 class ForecastModelConfig():
-    def __init__(self,inputs,**kwargs):
+    def __init__(self, inputs, **kwargs):
         self.inputs = inputs
         self.outputs = inputs
         self.processor_dts = [6]

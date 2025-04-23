@@ -1,9 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
-import matplotlib.pyplot as plt
-from model_latlon.data import get_constant_vars
+from model_latlon.vars import get_constant_vars
 from utils import * 
 import matepoint
 
@@ -117,8 +115,6 @@ class EarthConvDown2d(nn.Module):
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, stride=stride, padding=0)
 
     def forward(self, x):
-        _,_,H,W = x.shape
-        #assert (H-1)% 2 == 0 and W % 2 == 0, f"Input shape must be odd,even got {H}x{W}"
         k = self.kernel_size // 2
         h = earth_pad2d(x, (k,k))
 
@@ -136,7 +132,6 @@ class EarthConvUp2d(nn.Module):
 
     def forward(self, x):
         B,C,Hs,Ws = x.shape
-        #assert Hs % 2 == 1, "Don't forget about the penguins (or I don't wanna go less than 90 longitudes)"
         H,W = Hs*self.stride-(Hs % 2), Ws*self.stride
         pad = self.kernel_size // 2
         h = self.conv(x)
@@ -149,7 +144,6 @@ class EarthConvUp2d(nn.Module):
 def imsave2(path,t):
     print("-----")
     print(f"{path}: {[x for x in t.shape]}")
-    #print(f"{path}: {[int(x) for x in torch.unique(t).tolist()]}")
     plt.imsave(path,t[0,0].detach().numpy())
     print("----")
 
@@ -178,18 +172,12 @@ def find_periodicity(tensor):
 
 
 def call_checkpointed(module, *args, checkpoint_type="matepoint_sync", **kwargs):
-    # Making a function for this because I routinely forget the syntax and would be confused about what paramters I want to set
-    #checkpoint_type = "torch"
     if not torch.is_grad_enabled():
         checkpoint_type = "none"
-    #print("len is", len(matepoint.Gmatepoint_ctx))
-    #assert checkpoint_type == "matepoint_sync"
     if checkpoint_type == "matepoint": checkpoint_type = "matepoint_sync"
     try: n = module.__name__
     except: n = module.__class__.__name__
-    """
-    print("callking checkpoint", n, len(args), [x.shape for x in args],checkpoint_type)
-    """
+   
     if checkpoint_type == "none": return module(*args, **kwargs) # so that it's easy to disable checkpointing for debugging 
     elif checkpoint_type == "torch": return torch.utils.checkpoint.checkpoint(module, *args, **kwargs, use_reentrant=False, preserve_rng_state=False)
     else: assert checkpoint_type.startswith("matepoint"), f"checkpoint_type must be 'none', 'torch', or 'matepoint', got {checkpoint_type}"

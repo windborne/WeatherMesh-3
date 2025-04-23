@@ -4,28 +4,12 @@ import torch.nn.functional as F
 import os   
 from model_latlon.primatives3d import *
 
-import warnings
-warnings.filterwarnings("ignore",category=FutureWarning, message=".*torch.cuda.amp.custom.*")
-warnings.simplefilter(action='ignore', category=FutureWarning) #for annoying natten warnings
-
-torch.backends.cudnn.benchmark = False
-
 from natten.types import (
     CausalArg3DTypeOrDed,
     Dimension3DTypeOrDed,
-    FnaBackwardConfigType,
-    FnaForwardConfigType,
-    NoneType,
 )
 from natten.utils import (
-    check_additional_keys,
-    check_additional_values,
     check_all_args,
-    check_backward_tiling_config,
-    check_tiling_config,
-    get_num_na_weights,
-    log,
-    make_attn_tensor_from_input,
 )
 
 from torch import Tensor
@@ -47,9 +31,6 @@ def tuned_na3d(
             "Fused neighborhood attention does not support nested tensors yet."
         )
 
-    #tiling_config_forward, tiling_config_backward = autotune_fna(
-    #    3, query, kernel_size, dilation, is_causal
-    #)
     tiling_config_forward, tiling_config_backward = ((8, 2, 4), (8, 2, 4)), ((8, 4, 2), (8, 2, 4), (1, 45, 30), False)
     scale = scale or query.shape[-1] ** -0.5
 
@@ -68,9 +49,7 @@ def tuned_na3d(
 
 
 def posemb_sincos_3d(patches, temperature = 10000, dtype = torch.float32):
-    #print("uhhh", patches.shape, patches.device, patches.dtype)
-    #print("er patches", patches)
-    (_, f, h, w, dim), device, dtype = patches#*patches.shape, patches.device, patches.dtype
+    (_, f, h, w, dim), device, dtype = patches
 
     z, y, x = torch.meshgrid(
         torch.arange(f, device = device),
@@ -79,7 +58,6 @@ def posemb_sincos_3d(patches, temperature = 10000, dtype = torch.float32):
     indexing = 'ij')
 
     fourier_dim = dim // 6
-    #print("Hey dim is", dim, "fourier", fourier_dim)
 
     omega = torch.arange(fourier_dim, device = device) / (fourier_dim - 1)
     omega = 1. / (temperature ** omega)
@@ -102,7 +80,7 @@ def add_posemb(x):
 def tr_pad(x, window_size):
     wpad = window_size[2]//2
     x = x.permute(0,4,1,2,3) # To conv-style
-    x = earth_pad3d(x,(0,0,wpad)) # we just need to pad the longitude dim for wrapping around earth
+    x = earth_pad3d(x,(0,0,wpad)) # We need to pad the longitude dim for wrapping around earth
     x = x.permute(0,2,3,4,1)
     return x
 
@@ -115,7 +93,7 @@ def tr_unpad(x, window_size):
 from typing import Optional, Tuple
 os.environ['NATTEN_LOG_LEVEL'] = 'error'
 import warnings
-warnings.simplefilter(action='ignore', category=FutureWarning) #for annoying natten warnings
+warnings.simplefilter(action='ignore', category=FutureWarning)
 
 import natten
 from natten.utils import check_all_args
@@ -187,17 +165,12 @@ class CustomNeighborhoodAttention3D(nn.Module):
             .reshape(B, D, H, W, 3, self.num_heads, self.head_dim)
             .permute(4, 0, 1, 2, 3, 5, 6)
         )
-        #    .permute(4, 0, 5, 1, 2, 3, 6) # this is for non FNA
         q, k, v = qkv[0], qkv[1], qkv[2]
         if self.embed_mod is None: # This is a bug. Present in all legacy models. tuned_na3d already multiplies under the hood. use "nothing" if you don't want this
             q = q * self.scale
 
         assert self.embed_mod is None or self.embed_mod == "nothing"
 
-
-        #assert natten.context.is_fna_enabled()
-        #print("rpb shape", self.rpb.shape, "qkv", qkv.shape, q.shape, k.shape, v.shape, "x", x.shape)
-        # TODO look at q scale
         x_2 = tuned_na3d(
             q,
             k,
@@ -207,12 +180,6 @@ class CustomNeighborhoodAttention3D(nn.Module):
             is_causal=self.is_causal,
             rpb=None,
         )
-        #x_2 = x_2.permute(0, 4, 1, 2, 3, 5)
-        """
-        0 1 2 3 4 5
-        0 4 1 2 3 5
-        0 1 2 3 4 5 
-        """
         x = x_2.reshape(B, D, H, W, C)
 
         return self.proj_drop(self.proj(x))

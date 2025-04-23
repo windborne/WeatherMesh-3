@@ -2,25 +2,34 @@ import torch
 import torch.nn as nn
 import pickle
 import numpy as np
-import os
 import json
 
 from eval import eval_rms_train
-from model_latlon.data import get_constant_vars, N_ADDL_VARS
+from model_latlon.vars import get_constant_vars, N_ADDL_VARS
 from model_latlon.transformer3d import SlideLayers3D
 from model_latlon.primatives2d import southpole_pad2d, southpole_unpad2d
-from utils import CONSTS_PATH, ORANGE, load_state_norm
+from utils import ORANGE, load_normalization
 from model_latlon.codec2d import EarthConvDecoder2d
 from model_latlon.codec3d import EarthConvDecoder3d
 from model_latlon.primatives2d import southpole_pad2d, southpole_unpad2d, call_checkpointed
 from model_latlon.primatives3d import southpole_pad3d, southpole_unpad3d
 
-# General decoder type (on the edge of being boilerplate, but definitely necessary as it prevents functions from not being defined)
 class Decoder(nn.Module):
+    """
+    Base Decoder class for all decoders. 
+    
+    This abstract class guarantees all WeatherMesh decoders have compute_loss() and compute_errors() functions. 
+    The log_information() function is optional, though encouraged. 
+    This class also declares helpful defaults (such as the default_decoder_loss_weight).
+    When building a new decoder, you should inherit from this class and implement the compute_loss (not-optional), compute_errors (not-optional) and log_information (optional) functions.
+
+    Args:
+        decoder_name (str): Name identifier of the decoder. This is used for logging and debugging purposes.
+    """
+    
     def __init__(self, decoder_name):
         super(Decoder, self).__init__()
         self.decoder_name = decoder_name
-        
         self.default_decoder_loss_weight = 1
         self._check_log_information()
     
@@ -34,65 +43,101 @@ class Decoder(nn.Module):
         return 
     
     def _check_log_information(self):
+        """
+        Checks if the log_information function is defined for the decoder. If not, it raises a warning.
+        """
         subclass_method = getattr(self.__class__, 'log_information', None)
         parent_method = getattr(Decoder, 'log_information', None)
         if subclass_method is parent_method: print(ORANGE(f"WARNING: log_information function is not defined for {self.decoder_name}"))
 
 def load_matrices(mesh):
-    state_norm, state_norm_matrix = load_state_norm(mesh.wh_lev, mesh)
+    """
+    Loads the state norm and state norm matrix for the given mesh. Useful for normalizing variables upon output
+
+    Args:
+        mesh (Mesh): Mesh object from meshes.py
+
+    Returns:
+        norm (dict): Dictionary containing all the normalization parameters (mean and std) with keys for each weather variable
+        normalization_matrix_std (torch.Tensor): Tensor containing the standard deviation for each variable
+        nan_mask (np.array): Mask for nan values in the data. This is used to ignore nan values in the loss function
+    """
+    norm, normalization_matrix_std = load_normalization(mesh, with_means=False)
     
-    # nan_mask is only False for nan values eg. all land for sstk (like the last few rows)
-    nan_mask_dict = pickle.load(open(f"{CONSTS_PATH}/nan_mask.pkl", 'rb'))
+    # nan_mask is False for nan values eg. all land for sstk 
+    with open("constants/normalization_config.json", 'rb') as f:
+        nan_mask_dict = pickle.load(f)
+        
     nan_mask = np.ones((len(mesh.lats), len(mesh.lons), mesh.n_vars), dtype=bool)
-    # Apply the appropriate mask for each variable
     for i, var_name in enumerate(mesh.sfc_vars):
         if var_name in nan_mask_dict:
             nan_mask[:,:,mesh.n_pr + i] = nan_mask_dict[var_name]
     
-    return state_norm, torch.from_numpy(state_norm_matrix), nan_mask
+    return norm, torch.from_numpy(normalization_matrix_std), nan_mask
 
 def gather_variable_weights(mesh):
+    """
+    Gathers the variable weights for the given mesh and its variables.
+    
+    This is used to weight the loss function appropriately for each variable.
+
+    Args:
+        mesh (Mesh): Mesh object from meshes.py which contains the variables for which we want weights for
+
+    Returns:
+        torch.Tensor: Tensor containing the variable weights for each variable in the mesh. The shape of the tensor is (1, 1, 1, D) where D is the number of variables in the mesh. 
+    """
     default_variable_weight = 2.5
     
-    variable_weights = json.load(open(f"norm/variable_weights.json", 'r'))
+    with open("constants/variable_weights.json", 'r') as f:
+        variable_weights = json.load(f)
+
+    output_weights = [] # Output should be a tensor with shape (n_pr_vars * n_levels + n_sfc_vars) == D
     
-    # Output should be a tensor with shape (n_pr_vars * n_levels + n_sfc_vars)
-    output_weights = []
-    
-    for var_name in mesh.pressure_vars:
-        if var_name not in variable_weights: raise Exception(f"Pressure variable {var_name} not found in variable_weights.json. You are required to place something there.")
-        assert isinstance(variable_weights[var_name], list), f"Pressure variable {var_name}'s variable weights must be a list in variable_weights.json"
+    # Gather pressure variable weights
+    for pressure_var in mesh.pressure_vars:
+        if pressure_var not in variable_weights: raise Exception(f"Pressure variable {pressure_var} not found in constants/variable_weights.json. Pressure variables must have a variable weight.")
+        assert isinstance(variable_weights[pressure_var], list), f"Pressure variable {pressure_var}'s variable weights must be a list in constants/variable_weights.json"
         for level in mesh.levels:
-            variable_level_index = variable_weights['levels'].index(level)
-            variable_weight = variable_weights[var_name][variable_level_index]
+            level_index = variable_weights['levels'].index(level)
+            variable_weight = variable_weights[pressure_var][level_index]
             output_weights.append(variable_weight)
     
-    for var_name in mesh.sfc_vars:
-        if var_name not in variable_weights: 
-            variable_weight = default_variable_weight # Default value
-            assert var_name != 'zeropad', "im trying to load a weight for zeropad, this is sus and it feels like ur using the wrong mesh. https://chat.windbornesystems.com/#narrow/stream/201-tech-dlnwp/topic/loss.20weights/near/6939952"
-            print(ORANGE(f"😵‍💫😵‍💫😵‍💫 ACHTUNG!!! No variable weight found for {var_name}. Defaulting to {default_variable_weight}. Make sure you want to do this batman..."))
-            #raise Exception(f"Surface variable {var_name} not found in variable_weights.json. You are required to place something there.")
+    # Gather surface variable weights
+    for surface_var in mesh.sfc_vars:
+        if surface_var not in variable_weights: 
+            variable_weight = default_variable_weight
+            assert surface_var != 'zeropad', "Loading a weight for zeropad which isn't expected. Perhaps you're using the wrong mesh?"
+            print(ORANGE(f"WARNING: No variable weight found for {surface_var}. Defaulting to {default_variable_weight}."))
         else:
-            variable_weight = variable_weights[var_name]
-        assert not isinstance(variable_weight, list), f"Surface variable {var_name} must be a scalar value in variable_weights.json"
+            variable_weight = variable_weights[surface_var]
+        assert not isinstance(variable_weight, list), f"Surface variable {surface_var} must be a scalar value in variable_weights.json"
         output_weights.append(variable_weight)
         
-    # Put it in a (B, N1, N2, D) shape to make broadcasting more obvious
+    # Put it in a (1, 1, 1, D) shape to make broadcasting to (B, H, W, D) more obvious
     output_weights = torch.tensor(output_weights)
-    return output_weights[np.newaxis, np.newaxis, np.newaxis, :]
+    return output_weights[None, None, None, :]
 
 def gather_geospatial_weights(mesh):
-    _, Lats = np.meshgrid(mesh.lons, mesh.lats)
+    """
+    Gathers the geospatial weights for the given mesh and its variables.
+    
+    Geospatial weights are used to weigh the loss function appropriately for each variable based on its geospatial location.
+
+    Args:
+        mesh (Mesh): Mesh object from meshes.py which contains the latitudes and longitudes for which we want weights for
+
+    Returns:
+        torch.Tensor: Tensor containing the geospatial weights for each variable in the mesh. The shape of the tensor is (1, W, H, 1) where W is the width (longitude) and H is the height (latitude).
+    """
+    longitudes, latitudes = np.meshgrid(mesh.lons, mesh.lats)
      
-    def calc_geospatial_weight(lats):
+    def calculate_geospatial_weight(lats):
         F = torch.FloatTensor
         weights = np.cos(lats * np.pi/180)
 
-        # Where we want the parabola to start for the pole weights
-        boundary = 50 
-        # Weight at poles
-        top_of_parabola = 0.3
+        boundary = 50 # Where we want the parabola to start for the pole weights
+        top_of_parabola = 0.1 # Weight at poles
 
         progress = np.arange(boundary) / (boundary - 1) # Weights for top and bottom pixels
         parabola = top_of_parabola * (1 - progress) ** 2
@@ -101,26 +146,33 @@ def gather_geospatial_weights(mesh):
 
         return F(weights)
 
-    output_weights = calc_geospatial_weight(Lats)
+    # We only actually scale weights by latitude since longitude should remain uniform across the globe
+    output_weights = calculate_geospatial_weight(latitudes)
     
-    # Put it in a (B, N1, N2, D) shape to make broadcasting more obvious
+    # Put it in (1, H, W, 1) shape to make broadcasting to (B, H, W, D) more obvious
     return output_weights[np.newaxis, :, :, np.newaxis]
 
-# Loss function typically used for decoders operating on LatLonGrids
-# Written here to reduce code duplication 
 def default_compute_loss(self, y_gpu, yt_gpu):
-    # Actual loss
+    """
+    Default loss function for decoders operating on LatLonGrids.
+    
+    This function computes the l1 loss 
+
+    Args:
+        y_gpu (torch.Tensor): Predicted y values from the decoder on the GPU. Shape is (B, H, W, D)
+        yt_gpu (_type_): Actual y values from data on the GPU. Shape is (B, H, W, D)
+
+    Returns:
+        torch.Tensor: A scalar tensor containing the loss value. 
+    """
+    
     loss = torch.abs(y_gpu - yt_gpu)
     
-    # Weights for loss
     combined_weight = self.geospatial_loss_weight * self.variable_loss_weight 
-    weights = self.decoder_loss_weight * combined_weight / torch.sum(combined_weight)
+    scaled_weights = self.decoder_loss_weight * combined_weight / torch.sum(combined_weight)
     
-    return torch.sum(loss * weights)
+    return torch.sum(loss * scaled_weights)
 
-# This is also on life support
-# Can further simplify this by removing DDP and random_time_subset
-# Check out https://github.com/windborne/deep/pull/28 for more details
 # Compute errors typically used for decoders operating on LatLonGrids
 # Written here to reduce code duplication
 def default_compute_errors(self, y_gpu, yt_gpu, trainer=None):
@@ -135,7 +187,7 @@ def default_compute_errors(self, y_gpu, yt_gpu, trainer=None):
     actual = to_eval(yt_gpu)
     weight = self.geospatial_loss_weight.squeeze()
     
-    pnorm = self.state_norm_matrix[:nPL].view(nP, nL)
+    pnorm = self.normalization_matrix_std[:nPL].view(nP, nL)
     ddp_reduce = trainer.DDP and not trainer.data.config.random_timestep_subset
     #print("pred actual", pred.device, actual.device)
     rms = eval_rms_train(pred, actual, pnorm, weight, keys=self.mesh.pressure_vars, by_level=True, stdout=False, ddp_reduce=ddp_reduce, mesh=self.mesh)
@@ -146,7 +198,7 @@ def default_compute_errors(self, y_gpu, yt_gpu, trainer=None):
     actual = to_eval(yt_gpu)
     pred = pred.to(torch.float32)
     actual = actual.to(torch.float32)
-    pnorm = self.state_norm_matrix[nPL:]
+    pnorm = self.normalization_matrix_std[nPL:]
     rms.update(eval_rms_train(pred, actual, pnorm, weight, keys=self.mesh.sfc_vars, stdout=False, ddp_reduce=ddp_reduce, mesh=self.mesh))
  
     return rms
@@ -161,16 +213,15 @@ def default_log_information(self, y_gpu, yt_gpu, rms_dict, writer, dt, n_step, p
         name500 = var_name + "_500"
         writer.add_scalar(prefix + f"_{dt}/" + name500, rms_dict[name500], n_step)
 
-
 class ResConvDecoder(Decoder):
-    def __init__(self, mesh, config, fuck_the_poles=False, decoder_loss_weight=None):
+    def __init__(self, mesh, config, decoder_loss_weight=None):
         super(ResConvDecoder, self).__init__(self.__class__.__name__)
         self.mesh = mesh
         self.config = config
         
         # Load norm matrices 
-        _, state_norm_matrix, _ = load_matrices(mesh)
-        self.register_buffer(f'state_norm_matrix', state_norm_matrix)
+        _, normalization_matrix_std, _ = load_matrices(mesh)
+        self.register_buffer(f'normalization_matrix_std', normalization_matrix_std)
        
         # Gather loss weights
         geospatial_loss_weight = gather_geospatial_weights(self.mesh)
@@ -180,16 +231,10 @@ class ResConvDecoder(Decoder):
         self.register_buffer(f'variable_loss_weight', variable_loss_weight)
         
         self.n_convs = 3
-        self.fuck_the_poles = fuck_the_poles
         data,cvars = get_constant_vars(mesh)
         nc = len(cvars)
         data = southpole_pad2d(data.unsqueeze(0).permute(0,3,1,2))
         self.register_buffer('const_data_0', data)
-        """
-        for i in range(3):
-            data = southpole_pad2d(F.avg_pool2d(data, kernel_size=2, stride=2))
-            self.register_buffer(f'const_data_{i+1}', data)
-        """
 
         self.total_sfc = self.mesh.n_sfc_vars + N_ADDL_VARS + len(cvars)
 
@@ -207,12 +252,6 @@ class ResConvDecoder(Decoder):
         else:
             self.pr_decoder = EarthConvDecoder3d(self.mesh.n_pr_vars, conv_dims=[self.config.latent_size]+self.config.pr_dims[::-1], affine=self.config.affine)
         assert len(self.sfc_decoder.up_layers) == self.n_convs
-        #self.pr_decoder = nn.ConvTranspose3d(out_channels=self.mesh.n_pr_vars, in_channels=self.config.latent_size, kernel_size=(4,8,8), stride=(4,8,8))
-        #self.sfc_decoder = nn.ConvTranspose2d(out_channels=self.mesh.n_sfc_vars, in_channels=self.config.latent_size, kernel_size=(8,8), stride=(8,8))
-
-
-    def decoder_inner(self, x):
-        pass
 
     def decoder_sfc(self, x):
 
@@ -234,34 +273,24 @@ class ResConvDecoder(Decoder):
             x_pr = southpole_unpad3d(self.pr_decoder(x_pr))
 
         x_pr = x_pr.permute(0,3,4,1,2)
-        #x_pr = torch.flatten(x_pr, start_dim=-2) # no!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
         return x_pr
 
     def forward(self, x):
         x = self.tr(x)
-        _, _, _, W, _ = x.shape
         wpad = self.config.window_size[2]//2
         x = x[:,:,:,wpad:-wpad,:]
 
         if self.config.oldpr:
-            pr = self.decoder_pr(x[:,:-1]) # TODO: maybe checkpoint this actually
+            pr = self.decoder_pr(x[:,:-1]) 
         else:
             xs = []
             for i in range(self.mesh.n_levels // 4):
-                #print("inp", x.shape, x[:,i:i+1].shape)
                 xs.append(call_checkpointed(self.decoder_pr, x[:,i:i+1], checkpoint_type=self.config.checkpoint_type))
-                #print("er", xs[-1].shape)
             pr = torch.cat(xs, axis=-1)
         pr = torch.flatten(pr, start_dim=-2)
-        #xs.append(call_checkpointed(self.decoder_sfc, x[:,-1]))
         sfc = call_checkpointed(self.decoder_sfc, x[:,-1], checkpoint_type=self.config.checkpoint_type)
-        #print("ersfc", xs[-1].shape)
         y = torch.cat([pr, sfc], axis=-1)
-        if self.fuck_the_poles:
-            y[:,0,:,:] = y[:,3,:,:]
-            y[:,-1,:,:] = y[:,-4,:,:]
-        #y = call_checkpointed(self.decoder_inner, x)
-
+        
         return y
 
     def compute_loss(self, y_gpu, yt_gpu):

@@ -1,14 +1,15 @@
+# JACK_CHANGE_LATER
 import torch
 import torch.nn as nn
 from types import SimpleNamespace
 
 from meshes import LatLonGrid
 from model_latlon.transformer3d import SlideLayers3D
-from utils import SourceCodeLogger, MAGENTA
+from utils import MAGENTA
 import matepoint
+# JACK_CHANGE_LATER
 
-
-class ForecastModel(nn.Module,SourceCodeLogger):
+class ForecastModel(nn.Module):
     def __init__(self, config, encoders=[], decoders=[], processors=None):
         super(ForecastModel, self).__init__()
         self.code_gen = 'gen3'
@@ -29,8 +30,6 @@ class ForecastModel(nn.Module,SourceCodeLogger):
         print(MAGENTA(f"Initializing model. model.config.checkpoint_type is 👉{self.config.checkpoint_type}👈 Is this what you want?"))
 
     def forward_inner(self, xs, todo_dict, send_to_cpu, callback, return_latents=False, **kwargs):
-        # TODO: Clean this up to use the stuff in process.py.
-
         c = self.config
 
         if type(xs) == list:
@@ -77,19 +76,14 @@ class ForecastModel(nn.Module,SourceCodeLogger):
         outputs = {}
         def latent_l2(aa):
             return torch.mean(aa**2)
-            return call_checkpointed(lambda a: torch.mean(a**2), aa)
         while todos:
             tnow = todos[0]
-            #torch.cuda.empty_cache()
-            #mem = torch.cuda.mem_get_info()
-            #if int(os.environ.get('RANK', 0)) == 0: print("doing", tnow.remaining_steps[0], mem[0]/1e9, mem[1]/1e9)
-            #_t0 = time.time()
+            
             step = tnow.remaining_steps[0]
             completed_steps = tnow.completed_steps.copy()
             x,extra = tnow.state
             accumulated_dt = 0
-            #for todo in todos:
-            #    print(f"{todo.target_dt}: {','.join(todo.remaining_steps)}")
+            
             if step == 'E':
                 x = encode([xx.clone() for xx in x],t0s+3600*tnow.accum_dt)
                 total_l2 += latent_l2(x); total_l2_n += 1
@@ -99,9 +93,6 @@ class ForecastModel(nn.Module,SourceCodeLogger):
             elif step.startswith('P'):
                 pdt = int(step[1:])
                 x = self.processors[str(pdt)](x)
-                #pdt = c.processor_dt[0]
-                #assert len(c.processor_dt) == 1, "only one processor_dt is supported"
-                #x = self.processor(x)
                 accumulated_dt += pdt
             elif step == 'D':
                 if not return_latents:
@@ -122,13 +113,14 @@ class ForecastModel(nn.Module,SourceCodeLogger):
                     todo.remaining_steps = todo.remaining_steps[1:]
                     todo.completed_steps.append(step)
                     if not todo.remaining_steps:
+                        # JACK_CHANGE_LATER
                         if callback is not None:
                             callback(todo.target_dt, x)
                         else:
                             outputs[todo.target_dt] = x
+                        # JACK_CHANGE_LATER
                         todos.remove(todo)
-            #torch.cuda.synchronize()
-            #if int(os.environ.get('RANK', 0)) == 0: print("took", time.time()-_t0)
+            
         outputs["latent_l2"] = total_l2 / total_l2_n
         return outputs
     
