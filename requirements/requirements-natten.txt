@@ -1,0 +1,2 @@
+--find-links https://shi-labs.com/natten/wheels/
+natten==0.17.3+torch240cu121
