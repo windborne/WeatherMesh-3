@@ -1,3 +1,6 @@
+import torch
+import sys
+import types
 from meshes import LatLonGrid
 from model_latlon.config import ForecastModelConfig
 from model_latlon.encoder import ResConvEncoder
@@ -6,7 +9,27 @@ from model_latlon.top import ForecastModel
 from utils import levels_gfs, levels_hres, levels_medium
 from utils import MAGENTA
 
-def get_WeatherMesh3():
+def load_weights(model, weights_path):
+    """Load weights into model, handling checkpoint format and missing modules"""
+    
+    # Create temporary utils_lite module for checkpoint compatibility
+    import utils
+    utils_lite = types.ModuleType('utils_lite')
+    for attr in dir(utils):
+        if not attr.startswith('_'):
+            setattr(utils_lite, attr, getattr(utils, attr))
+    for class_name in ['WeatherTrainerConfig', 'LRScheduleConfig', 'DataConfig', 'OptimConfig']:
+        setattr(utils_lite, class_name, type(class_name, (), {'__init__': lambda self, *a, **k: None}))
+    sys.modules['utils_lite'] = utils_lite
+    
+    try:
+        checkpoint = torch.load(weights_path, map_location='cpu')
+        state_dict = checkpoint.get('model_state_dict', checkpoint)
+        model.load_state_dict(state_dict, strict=False)
+    finally:
+        del sys.modules['utils_lite']
+
+def get_WeatherMesh3(weights_path="WeatherMesh3.pt"):
     """
     Gets the WeatherMesh3 model with weights loaded.
     
@@ -80,6 +103,11 @@ def get_WeatherMesh3():
     model = ForecastModel(config, 
                           encoders=[gfs_encoder, hres_encoder],
                           decoders=[era_decoder])
+    
+    # Load weights
+    print(MAGENTA(f"Loading weights from {weights_path}..."))
+    load_weights(model, weights_path)
+    print(MAGENTA("Weights loaded successfully!"))
     
     return model
 
