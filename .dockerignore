@@ -1,0 +1,12 @@
+# Keep the build context small — Dockerfile COPYs only the code it needs.
+huge/
+model/
+.venv/
+.git/
+notebooks/
+skills/
+requirements/
+**/__pycache__/
+*.pyc
+.DS_Store
+*.ipynb

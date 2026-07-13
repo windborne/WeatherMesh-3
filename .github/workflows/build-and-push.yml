@@ -1,0 +1,57 @@
+name: build-and-push-image
+
+# Builds the WeatherMesh-3 inference image on a native amd64 runner (no QEMU)
+# and pushes to ECR. Manual trigger by default; flip on `push` once the OIDC
+# role + AWS_GHA_ROLE_ARN secret are configured.
+on:
+  workflow_dispatch:
+  # push:
+  #   branches: [main]
+  #   paths: ['server/**', 'model_latlon/**', 'utils.py', 'meshes.py', 'model.py', 'pyproject.toml', 'uv.lock']
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPO: 194290773983.dkr.ecr.us-east-1.amazonaws.com/wm3-pipeline
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_GHA_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Fetch vendored natten wheel from S3
+        run: |
+          mkdir -p server/wheels
+          aws s3 cp s3://wm3-gpu-194290773983/wheels/natten-0.17.3+torch240cu121-cp311-cp311-linux_x86_64.whl server/wheels/
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: server/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.ECR_REPO }}:latest
+            ${{ env.ECR_REPO }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Container self-test (imports torch/natten/matepoint/model, builds meshes)
+        run: docker run --rm ${{ env.ECR_REPO }}:${{ github.sha }} --selftest

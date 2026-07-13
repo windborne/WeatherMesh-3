@@ -1,0 +1,23 @@
+{
+  "widgets": [
+    {"type": "metric", "x": 0, "y": 0, "width": 12, "height": 6, "properties": {
+      "title": "Cycle success & output validity", "region": "us-east-1", "stat": "Maximum", "period": 3600,
+      "metrics": [["WeatherMesh3", "cycle_success", "pipeline", "weathermesh3"],
+                  ["WeatherMesh3", "output_valid", "pipeline", "weathermesh3"]]}},
+    {"type": "metric", "x": 12, "y": 0, "width": 12, "height": 6, "properties": {
+      "title": "Timings (s)", "region": "us-east-1", "stat": "Average", "period": 3600,
+      "metrics": [["WeatherMesh3", "fetch_seconds", "pipeline", "weathermesh3"],
+                  ["WeatherMesh3", "inference_seconds", "pipeline", "weathermesh3"],
+                  ["WeatherMesh3", "cycle_seconds", "pipeline", "weathermesh3"]]}},
+    {"type": "metric", "x": 0, "y": 6, "width": 12, "height": 6, "properties": {
+      "title": "2m temperature range (C)", "region": "us-east-1", "stat": "Average", "period": 3600,
+      "metrics": [["WeatherMesh3", "t2m_min_C", "pipeline", "weathermesh3"],
+                  ["WeatherMesh3", "t2m_max_C", "pipeline", "weathermesh3"]]}},
+    {"type": "metric", "x": 12, "y": 6, "width": 12, "height": 6, "properties": {
+      "title": "Physical-consistency diagnostics", "region": "us-east-1", "stat": "Average", "period": 3600,
+      "metrics": [["WeatherMesh3", "nonfinite_count", "pipeline", "weathermesh3"],
+                  ["WeatherMesh3", "neg_humidity_frac", "pipeline", "weathermesh3"],
+                  ["WeatherMesh3", "dewpoint_gt_temp_frac", "pipeline", "weathermesh3"],
+                  ["WeatherMesh3", "precip_capped_mass_frac", "pipeline", "weathermesh3"]]}}
+  ]
+}

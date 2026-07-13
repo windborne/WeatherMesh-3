@@ -1,0 +1,35 @@
+[project]
+name = "weathermesh3"
+version = "3.0.0"
+description = "WindBorne WeatherMesh-3 model architecture (ICLR submission, arXiv:2503.22235)"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "jupyterlab>=4.6.1",
+    "numpy==2.2.2",
+    "torch==2.5.1",
+    "natten==0.17.3+torch240cu121 ; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "matepoint ; sys_platform == 'linux'",
+]
+
+[dependency-groups]
+notebook = [
+    "ipykernel>=6.29",
+    "jupyterlab>=4.2",
+    "matplotlib>=3.9",
+]
+
+[tool.uv]
+package = false
+default-groups = ["notebook"]
+allow-insecure-host = ["shi-labs.com"]
+find-links = ["https://shi-labs.com/natten/wheels/"]
+
+[[tool.uv.index]]
+name = "testpypi"
+url = "https://test.pypi.org/simple/"
+explicit = true
+
+[tool.uv.sources]
+matepoint = { index = "testpypi" }

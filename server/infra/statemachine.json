@@ -1,0 +1,44 @@
+{
+  "Comment": "WeatherMesh-3 6-hourly forecast cycle: one GPU Processing job, retry, alert on failure",
+  "StartAt": "RunCycle",
+  "States": {
+    "RunCycle": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sagemaker:createProcessingJob.sync",
+      "Parameters": {
+        "ProcessingJobName.$": "States.Format('wm3-sfn-{}', States.ArrayGetItem(States.StringSplit($$.Execution.Name, '_'), 0))",
+        "AppSpecification": {
+          "ImageUri": "194290773983.dkr.ecr.us-east-1.amazonaws.com/wm3-pipeline:latest",
+          "ContainerArguments": ["--lead-hours", "6"]
+        },
+        "RoleArn": "arn:aws:iam::194290773983:role/service-role/AmazonSageMaker-ExecutionRole-20220814T090241",
+        "ProcessingResources": {"ClusterConfig": {"InstanceType": "ml.g5.xlarge", "InstanceCount": 1, "VolumeSizeInGB": 100}},
+        "Environment": {
+          "WM3_OUTPUT_BUCKET": "wm3-forecasts-194290773983",
+          "AWS_REGION": "us-east-1",
+          "WM3_WEIGHTS_S3": "s3://wm3-gpu-194290773983/model/WeatherMesh3.pt",
+          "WM3_SNS_TOPIC": "arn:aws:sns:us-east-1:194290773983:wm3-alerts"
+        },
+        "StoppingCondition": {"MaxRuntimeInSeconds": 3600}
+      },
+      "Retry": [{"ErrorEquals": ["States.ALL"], "IntervalSeconds": 120, "MaxAttempts": 2, "BackoffRate": 2.0}],
+      "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "Alert"}],
+      "End": true
+    },
+    "Alert": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "arn:aws:sns:us-east-1:194290773983:wm3-alerts",
+        "Subject": "WeatherMesh-3 cycle FAILED",
+        "Message.$": "$"
+      },
+      "Next": "CycleFailed"
+    },
+    "CycleFailed": {
+      "Type": "Fail",
+      "Error": "CycleFailed",
+      "Cause": "Processing job failed or could not be launched; see the SNS alert."
+    }
+  }
+}
